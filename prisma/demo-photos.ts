@@ -3,7 +3,7 @@
 // Photos are from Wikimedia Commons; licences and authors are in prisma/demo-photos/CREDITS.md.
 import { PrismaClient } from "@prisma/client";
 import { copyFile, mkdir } from "node:fs/promises";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
@@ -21,7 +21,7 @@ const pick = (list: [RegExp, string][], name: string) => list.find(([re]) => re.
 export async function attachDemoPhotos(db: PrismaClient) {
   const dir = path.join(__dirname, "demo-photos");
   const root = path.resolve(process.env.UPLOAD_DIR ?? "./storage/uploads");
-  await mkdir(root, { recursive: true });
+  if (!process.env.VERCEL && process.env.FILE_STORE !== "db") await mkdir(root, { recursive: true });
   const owner = async (tenantId: string) => (await db.membership.findFirst({ where: { tenantId, role: "OWNER" } }))?.userId;
   let added = 0;
   async function attach(tenantId: string, slug: string, target: { productId?: string; lotId?: string }, purpose: string) {
@@ -29,8 +29,9 @@ export async function attachDemoPhotos(db: PrismaClient) {
     const uploadedById = await owner(tenantId);
     if (!existsSync(src) || !uploadedById) return;
     const storageName = `${randomBytes(16).toString("hex")}.jpg`;
-    await copyFile(src, path.join(root, storageName));
-    await db.storedFile.create({ data: { tenantId, purpose, originalName: `${slug}.jpg`, storageName, mime: "image/jpeg", size: statSync(src).size, uploadedById, ...target } });
+    const inDb = !!process.env.VERCEL || process.env.FILE_STORE === "db";
+    if (!inDb) await copyFile(src, path.join(root, storageName));
+    await db.storedFile.create({ data: { ...(inDb ? { data: readFileSync(src) } : {}), tenantId, purpose, originalName: `${slug}.jpg`, storageName, mime: "image/jpeg", size: statSync(src).size, uploadedById, ...target } });
     added++;
   }
   for (const p of await db.product.findMany({ where: { tenant: { isDemo: true } } })) {

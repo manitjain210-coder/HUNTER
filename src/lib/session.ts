@@ -43,4 +43,5 @@ export async function destroySession() {
   c.delete(COOKIE);
 }
 
-export const demoMode = () => process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
+// Demo sign-in is off in production unless explicitly opted in (DEMO_IN_PRODUCTION=true, for a public demo deploy with fictional data only).
+export const demoMode = () => process.env.DEMO_MODE === "true" && (process.env.NODE_ENV !== "production" || process.env.DEMO_IN_PRODUCTION === "true");

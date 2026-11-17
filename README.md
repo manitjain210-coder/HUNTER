@@ -127,3 +127,11 @@ Needs a **persistent** disk for the SQLite file and `UPLOAD_DIR`, plus a **long-
 For multiple app instances, first move to PostgreSQL, object storage and a shared rate limiter.
 #   H U N T E R  
  
+## Deploying on Vercel
+
+1. Create a Postgres database (Neon or Vercel Postgres) and copy its connection string.
+2. Import the GitHub repo in Vercel. The build command comes from `vercel.json` (`scripts/vercel-build.mjs`): it derives the Postgres schema, applies migrations, optionally seeds, then builds.
+3. Set Environment Variables: `DATABASE_URL` (postgres URL; pooled URLs need `?pgbouncer=true&connection_limit=1`), `CRON_SECRET` (any long random string), and for a public demo with fictional data on the **first deploy only** `SEED_DEMO=1`, `DEMO_MODE=true`, `DEMO_IN_PRODUCTION=true`.
+4. Deploy. Uploaded photos and documents are stored in the database (`StoredFile.data`) because Vercel's disk is read-only.
+
+Differences from the VM setup: the background worker becomes the daily cron at `/api/cron` (Vercel Hobby allows one run a day; on Pro change the schedule in `vercel.json`, e.g. `* * * * *`). Vercel caps a request body at about 4.5 MB, so keep uploads small. The in-memory login rate limiter is per instance. Local development and the tests still use SQLite.

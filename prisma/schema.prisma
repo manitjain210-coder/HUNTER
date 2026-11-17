@@ -175,6 +175,7 @@ model StoredFile {
   kind         String   @default("") // e.g. REGISTRATION, AUTHORISATION_LETTER
   originalName String
   storageName  String   @unique
+  data         Bytes? // set when files are stored in the database (Vercel)
   mime         String
   size         Int
   jobId        String?

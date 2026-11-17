@@ -13,6 +13,13 @@ async function writeBytes(name: string, bytes: Uint8Array) {
   await writeFile(path.join(ROOT(), name), bytes, { flag: "wx" });
 }
 const readBytes = (name: string) => readFile(path.join(ROOT(), name));
+// On Vercel (read-only disk) bytes live in StoredFile.data. shortcut: database rows hold files, fine for photos/PDFs under 5 MB; move to object storage at scale.
+const inDb = () => !!process.env.VERCEL || process.env.FILE_STORE === "db";
+async function stash(name: string, bytes: Uint8Array) {
+  if (inDb()) return { data: Buffer.from(bytes) };
+  await writeBytes(name, bytes);
+  return {};
+}
 
 export const MAX_UPLOAD = 5 * 1024 * 1024;
 const SIGNATURES: { mime: string; ext: string; test: (b: Uint8Array) => boolean }[] = [
@@ -39,9 +46,10 @@ export async function saveUpload(
 ) {
   const sig = sniff(opts.file.bytes);
   const storageName = `${randomBytes(16).toString("hex")}.${sig.ext}`;
-  await writeBytes(storageName, opts.file.bytes);
+  const stored = await stash(storageName, opts.file.bytes);
   const rec = await db.storedFile.create({
     data: {
+      ...stored,
       tenantId: opts.tenantId, purpose: opts.purpose, kind: opts.kind ?? "", jobId: opts.jobId,
       originalName: opts.file.name.replace(/[^\w.\- ]/g, "_").slice(0, 120) || "file", storageName, mime: sig.mime, size: opts.file.bytes.length, uploadedById: actor.userId,
     },
@@ -82,9 +90,10 @@ export async function addImage(actor: Actor, target: { productId?: string; lotId
   const count = await db.storedFile.count({ where: { ...where, purpose } });
   if (count >= MAX_IMAGES) throw invalid(`Up to ${MAX_IMAGES} photos. Remove one first.`);
   const storageName = `${randomBytes(16).toString("hex")}.${sig.ext}`;
-  await writeBytes(storageName, file.bytes);
+  const stored = await stash(storageName, file.bytes);
   const rec = await db.storedFile.create({
     data: {
+      ...stored,
       tenantId: c.tenantId, purpose, ...where, sortOrder: count, storageName, mime: sig.mime, size: file.bytes.length, uploadedById: actor.userId,
       originalName: file.name.replace(/[^\w.\- ]/g, "_").slice(0, 120) || "photo",
     },
@@ -147,5 +156,5 @@ export async function authorizeFile(actor: Actor | null, fileId: string) {
 
 export async function readFileFor(actor: Actor | null, fileId: string) {
   const f = await authorizeFile(actor, fileId);
-  return { meta: f, bytes: await readBytes(f.storageName) };
+  return { meta: f, bytes: f.data ?? (await readBytes(f.storageName)) };
 }
