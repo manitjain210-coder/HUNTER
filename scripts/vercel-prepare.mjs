@@ -4,7 +4,9 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 mkdirSync("prisma/pg", { recursive: true });
-const schema = readFileSync("prisma/schema.prisma", "utf8").replace('provider = "sqlite"', 'provider = "postgresql"');
+// Vercel's Postgres integrations name the URL differently; use whichever is set (the same variable is read at runtime).
+const envName = ["DATABASE_URL", "POSTGRES_URL", "PRISMA_DATABASE_URL"].find((n) => /^postgres(ql)?:///.test(process.env[n] ?? "")) ?? "DATABASE_URL";
+const schema = readFileSync("prisma/schema.prisma", "utf8").replace('provider = "sqlite"', 'provider = "postgresql"').replace('env("DATABASE_URL")', `env("${envName}")`);
 writeFileSync("prisma/pg/schema.prisma", schema);
 if (!existsSync("prisma/pg/migrations")) {
   mkdirSync("prisma/pg/migrations/0_init", { recursive: true });
