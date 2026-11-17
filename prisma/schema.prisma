@@ -1,0 +1,681 @@
+// Khana Bridge data model. Statuses are strings validated in src/lib/domain.ts
+// (portable to PostgreSQL; swap to native enums during a Postgres migration).
+// Quantities are integers in the explicit `unit` of their row. Money is integer paise (INR minor units).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String   @id @default(cuid())
+  phone           String   @unique // E.164, normalised server-side
+  name            String
+  passwordHash    String
+  isPlatformAdmin Boolean  @default(false) // only set by bootstrap script / seed
+  isDemo          Boolean  @default(false)
+  active          Boolean  @default(true)
+  notifyPrefs     String   @default("{}") // JSON: { [type]: false } to mute in-app types
+  createdAt       DateTime @default(now())
+
+  sessions      Session[]
+  memberships   Membership[]
+  notifications Notification[]
+  cartItems     CartItem[]
+  orders        GroceryOrder[]  @relation("buyer")
+  audit         AuditEvent[]
+}
+
+model Session {
+  id                 String   @id @default(cuid())
+  tokenHash          String   @unique
+  userId             String
+  activeMembershipId String? // null = personal buyer / admin context
+  expiresAt          DateTime
+  createdAt          DateTime @default(now())
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Tenant {
+  id                 String   @id @default(cuid())
+  kind               String // SUPERMARKET | RESTAURANT | RECIPIENT | LOGISTICS
+  name               String
+  category           String? // applicant category for RECIPIENT
+  description        String   @default("")
+  publicSummary      String   @default("")
+  address            String   @default("")
+  serviceArea        String   @default("")
+  lat                Float?
+  lng                Float?
+  timezone           String   @default("Asia/Kolkata")
+  hours              String   @default("")
+  pocName            String   @default("")
+  pocRole            String   @default("")
+  phone              String   @default("")
+  email              String?
+  backupContact      String   @default("")
+  dailyCapacity      Int?
+  beneficiaryInfo    String   @default("") // categories + estimated counts, never identities
+  dietAccepted       String   @default("[]") // JSON array VEG|NONVEG|VEGAN
+  allergensOk        String   @default("[]") // allergens the org can accommodate
+  exclusions         String   @default("[]") // JSON array of allergen/ingredient exclusions
+  programmeNotes     String   @default("") // hospital/child programme + dietary restrictions
+  hasKitchen         Boolean  @default(false)
+  hasRefrigeration   Boolean  @default(false)
+  storageCapacity    String   @default("")
+  hasVehicle         Boolean  @default(false)
+  maxDistanceKm      Float?
+  packingNeeds       String   @default("")
+  acceptsPartial     Boolean  @default(true)
+  acceptsComponents  Boolean  @default(true)
+  restrictedFoodTypes String  @default("[]") // reviewer restriction: allowed food categories ([] = no restriction)
+  verificationStatus String   @default("DRAFT") // DRAFT|SUBMITTED|UNDER_REVIEW|APPROVED|CHANGES_REQUESTED|REJECTED|SUSPENDED
+  needsReReview      Boolean  @default(false)
+  archived           Boolean  @default(false)
+  isDemo             Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  branches     Branch[]
+  memberships  Membership[]
+  invitations  Invitation[]
+  applications VerificationApplication[]
+  files        StoredFile[]
+  products     Product[]
+  batches      ProductBatch[]
+  discountRules DiscountRule[]
+  watchlists   IngredientWatchlist[]
+  tickets      NeedTicket[]
+  schedules    RecurringSchedule[]
+  lots         SurplusLot[]
+  vehicles     Vehicle[]
+  salesOrders  GroceryOrder[] @relation("seller")
+  buyOrders    GroceryOrder[] @relation("buyerTenant")
+
+  @@index([kind, verificationStatus])
+}
+
+model Branch {
+  id               String  @id @default(cuid())
+  tenantId         String
+  name             String
+  address          String  @default("")
+  lat              Float?
+  lng              Float?
+  maxPlatesPerDay  Int? // capacity override for duplicate/unrealistic checks
+  capacityReason   String?
+  active           Boolean @default(true)
+  tenant           Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      String // OWNER|COORDINATOR|VIEWER|DRIVER (recipient/logistics) ; OWNER|MANAGER|OPERATOR|VIEWER (suppliers)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([userId, tenantId])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  tenantId    String
+  role        String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  usedById    String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+}
+
+model VerificationApplication {
+  id                  String    @id @default(cuid())
+  tenantId            String
+  status              String    @default("DRAFT")
+  declarationAccepted Boolean   @default(false)
+  declarationBy       String?
+  registrationDetails String    @default("")
+  submittedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  tenant              Tenant    @relation(fields: [tenantId], references: [id])
+  reviews             VerificationReview[]
+
+  @@index([status])
+}
+
+model VerificationReview {
+  id            String   @id @default(cuid())
+  applicationId String
+  fromStatus    String
+  toStatus      String
+  reason        String   @default("")
+  actorId       String
+  createdAt     DateTime @default(now())
+  application   VerificationApplication @relation(fields: [applicationId], references: [id])
+}
+
+// Private uploads: verification documents and delivery evidence. Bytes live outside /public.
+model StoredFile {
+  id           String   @id @default(cuid())
+  tenantId     String
+  purpose      String // VERIFICATION | EVIDENCE | PRODUCT_IMAGE | SURPLUS_IMAGE
+  kind         String   @default("") // e.g. REGISTRATION, AUTHORISATION_LETTER
+  originalName String
+  storageName  String   @unique
+  mime         String
+  size         Int
+  jobId        String?
+  productId    String? // PRODUCT_IMAGE: shown publicly with the product
+  lotId        String? // SURPLUS_IMAGE: shown to signed-in organisations only
+  sortOrder    Int      @default(0) // 0 = cover image
+  uploadedById String
+  createdAt    DateTime @default(now())
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([productId])
+  @@index([lotId])
+}
+
+// ---------------- Supermarket marketplace ----------------
+
+model Product {
+  id          String  @id @default(cuid())
+  tenantId    String
+  name        String
+  category    String
+  unit        String // ITEM | KG | LITRE | PACK
+  description String  @default("")
+  active      Boolean @default(true)
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  batches     ProductBatch[]
+
+  @@index([tenantId])
+}
+
+model ProductBatch {
+  id                 String    @id @default(cuid())
+  productId          String
+  tenantId           String
+  batchCode          String
+  quantity           Int // total units received in this batch
+  reservedQty        Int       @default(0) // held by open orders
+  soldQty            Int       @default(0) // collected
+  originalPriceMinor Int
+  minOrder           Int       @default(1)
+  expiryDate         DateTime // "use by"/expiry; never extended silently
+  bestBefore         DateTime?
+  storage            String    @default("AMBIENT")
+  pickupLocation     String    @default("")
+  status             String    @default("ACTIVE") // ACTIVE|WITHDRAWN|RECALLED
+  createdAt          DateTime  @default(now())
+  product            Product   @relation(fields: [productId], references: [id])
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  orderItems         OrderItem[]
+  cartItems          CartItem[]
+
+  @@unique([tenantId, batchCode])
+  @@index([status, expiryDate])
+}
+
+model DiscountRule {
+  id          String  @id @default(cuid())
+  tenantId    String
+  category    String? // null + batchId null = store-wide default
+  batchId     String?
+  timeTiers   String // JSON [{ maxDaysLeft, pct }]
+  qtyTiers    String // JSON [{ minQty, pct }]
+  maxPct      Int
+  floorMinor  Int     @default(0) // absolute per-unit floor
+  illustrative Boolean @default(false)
+  version     Int     @default(1)
+  active      Boolean @default(true)
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+}
+
+model IngredientWatchlist {
+  id          String    @id @default(cuid())
+  tenantId    String
+  query       String
+  category    String?
+  quantity    Int?
+  unit        String?
+  requiredBy  DateTime?
+  minShelfDays Int      @default(0)
+  radiusKm    Float?
+  createdAt   DateTime  @default(now())
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+}
+
+model CartItem {
+  id             String       @id @default(cuid())
+  userId         String
+  buyerTenantId  String? // null = personal buyer context
+  batchId        String
+  quantity       Int
+  seenPriceMinor Int // to detect repricing at checkout
+  user           User         @relation(fields: [userId], references: [id])
+  batch          ProductBatch @relation(fields: [batchId], references: [id])
+
+  @@unique([userId, buyerTenantId, batchId])
+}
+
+model GroceryOrder {
+  id                   String    @id @default(cuid())
+  buyerUserId          String
+  buyerTenantId        String?
+  sellerTenantId       String
+  status               String    @default("RESERVED") // RESERVED|COLLECTED|CANCELLED|EXPIRED
+  paymentStatus        String    @default("PENDING") // PENDING|MANUAL_REPORTED|ADMIN_CONFIRMED|DEMO_SIMULATED
+  totalMinor           Int
+  reservationExpiresAt DateTime
+  idempotencyKey       String    @unique
+  policySnapshot       String    @default("{}")
+  createdAt            DateTime  @default(now())
+  collectedAt          DateTime?
+  buyer                User      @relation("buyer", fields: [buyerUserId], references: [id])
+  buyerTenant          Tenant?   @relation("buyerTenant", fields: [buyerTenantId], references: [id])
+  seller               Tenant    @relation("seller", fields: [sellerTenantId], references: [id])
+  items                OrderItem[]
+  payments             PaymentRecord[]
+
+  @@index([sellerTenantId, status])
+  @@index([buyerUserId])
+}
+
+model OrderItem {
+  id                 String       @id @default(cuid())
+  orderId            String
+  batchId            String
+  quantity           Int
+  unitPriceMinor     Int
+  originalPriceMinor Int
+  pricingSnapshot    String // JSON price breakdown + rule version
+  order              GroceryOrder @relation(fields: [orderId], references: [id])
+  batch              ProductBatch @relation(fields: [batchId], references: [id])
+}
+
+model PaymentRecord {
+  id           String       @id @default(cuid())
+  orderId      String
+  method       String // CASH_AT_PICKUP | UPI_MANUAL | BANK_MANUAL | DEMO_SIMULATED
+  amountMinor  Int
+  reference    String       @default("")
+  status       String // MANUAL_REPORTED | ADMIN_CONFIRMED | DEMO_SIMULATED
+  recordedById String
+  confirmedById String?
+  createdAt    DateTime     @default(now())
+  order        GroceryOrder @relation(fields: [orderId], references: [id])
+}
+
+// ---------------- Donation network ----------------
+
+model NeedTicket {
+  id               String    @id @default(cuid())
+  tenantId         String
+  branchId         String?
+  requesterId      String
+  title            String
+  purpose          String
+  mealSlot         String // BREAKFAST|LUNCH|DINNER|SNACK
+  needDate         DateTime // the date (00:00 local, stored UTC)
+  peopleCount      Int
+  foodCategory     String // COMPLETE_MEALS|PACKAGED|COMPONENTS
+  dietPref         String // VEG|NONVEG|VEGAN|ANY
+  exclusions       String    @default("[]") // allergens that must be absent (strict)
+  otherDietary     String    @default("")
+  receiveFrom      DateTime
+  latestDelivery   DateTime
+  servingTime      DateTime
+  partialOk        Boolean   @default(true)
+  minUseful        Int       @default(1)
+  fulfilment       String // PICKUP_BY_ORG | DELIVERY
+  deliveryAddress  String    @default("")
+  lat              Float?
+  lng              Float?
+  maxDistanceKm    Float?
+  receivingContact String    @default("")
+  storageNotes     String    @default("")
+  containers       String    @default("")
+  unloading        String    @default("")
+  transportFunding String    @default("ORG") // ORG|RESTAURANT|SPONSOR|PLATFORM|UNDECIDED
+  urgency          String    @default("NORMAL") // NORMAL|URGENT_PENDING|URGENT
+  urgencyReason    String    @default("")
+  status           String    @default("DRAFT") // DRAFT|OPEN|FILLED|CLOSED|CANCELLED|EXPIRED
+  flags            String    @default("[]") // duplicate / unrealistic warnings for admin review
+  scheduleId       String?
+  occurrenceKey    String?   @unique // scheduleId:YYYY-MM-DD idempotency
+  createdAt        DateTime  @default(now())
+  publishedAt      DateTime?
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  requirements     TicketRequirement[]
+  offers           Offer[]
+  allocations      Allocation[]
+
+  @@index([status, needDate])
+  @@index([tenantId])
+}
+
+model TicketRequirement {
+  id          String  @id @default(cuid())
+  ticketId    String
+  kind        String // MEAL | PACKAGED | COMPONENT
+  name        String // "Complete meal plates", "Rice", ...
+  unit        String // PLATES|KG|LITRES|PIECES|PORTIONS
+  quantity    Int
+  servingNote String  @default("")
+  reservedQty Int     @default(0) // active allocations (reserved/collected/delivered); guarded by conditional update
+  ticket      NeedTicket @relation(fields: [ticketId], references: [id])
+  allocations Allocation[]
+  offerLines  OfferLine[]
+}
+
+model RecurringSchedule {
+  id                String    @id @default(cuid())
+  tenantId          String
+  template          String // JSON of ticket fields + requirements
+  daysOfWeek        String // JSON [0..6], 0 = Sunday, in org timezone
+  localTime         String // HH:mm serving time
+  startDate         String // YYYY-MM-DD local
+  endDate           String? // YYYY-MM-DD local
+  exceptions        String    @default("[]") // YYYY-MM-DD local dates to skip
+  paused            Boolean   @default(false)
+  createdById       String
+  createdAt         DateTime  @default(now())
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+}
+
+model SurplusLot {
+  id                 String    @id @default(cuid())
+  tenantId           String
+  branchId           String?
+  stage              String // EXPECTED|READY|CLOSED|WITHDRAWN|EXPIRED
+  title              String
+  notes              String    @default("")
+  expectedFrom       DateTime?
+  expectedUntil      DateTime?
+  dietCategory       String    @default("VEG")
+  storage            String    @default("") // holding conditions
+  packaging          String    @default("")
+  preparedAt         DateTime?
+  readyAt            DateTime?
+  pickupDeadline     DateTime?
+  consumeBy          DateTime?
+  handlingDeclaration Boolean  @default(false)
+  declaredById       String?
+  flags              String    @default("[]")
+  closeReason        String?
+  lat                Float?
+  lng                Float?
+  alertLevel         Int       @default(0) // escalation wave already sent
+  createdAt          DateTime  @default(now())
+  confirmedAt        DateTime?
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  items              FoodItem[]
+  offers             Offer[]
+
+  @@index([stage, pickupDeadline])
+}
+
+model FoodItem {
+  id               String  @id @default(cuid())
+  lotId            String
+  name             String
+  kind             String // MEAL | PACKAGED | COMPONENT
+  unit             String // PLATES|KG|LITRES|PIECES|PORTIONS
+  quantity         Int // confirmed actual (or estimate while EXPECTED)
+  allocatedQty     Int     @default(0) // active allocations; guarded by conditional update
+  servingDesc      String  @default("")
+  ingredients      String  @default("")
+  allergens        String  @default("[]")
+  allergensUnknown Boolean @default(true)
+  lot              SurplusLot @relation(fields: [lotId], references: [id])
+  allocations      Allocation[]
+  offerLines       OfferLine[]
+}
+
+model Offer {
+  id             String    @id @default(cuid())
+  lotId          String
+  ticketId       String
+  direction      String // SUPPLIER_OFFER | RECIPIENT_REQUEST
+  status         String    @default("PROPOSED") // PROPOSED|ACCEPTED|DECLINED|WITHDRAWN|EXPIRED
+  expiresAt      DateTime
+  createdById    String
+  decidedById    String?
+  reason         String?
+  idempotencyKey String    @unique
+  createdAt      DateTime  @default(now())
+  decidedAt      DateTime?
+  lot            SurplusLot @relation(fields: [lotId], references: [id])
+  ticket         NeedTicket @relation(fields: [ticketId], references: [id])
+  lines          OfferLine[]
+
+  @@index([ticketId, status])
+  @@index([lotId, status])
+}
+
+model OfferLine {
+  id            String  @id @default(cuid())
+  offerId       String
+  foodItemId    String
+  requirementId String
+  quantity      Int
+  offer         Offer   @relation(fields: [offerId], references: [id])
+  foodItem      FoodItem @relation(fields: [foodItemId], references: [id])
+  requirement   TicketRequirement @relation(fields: [requirementId], references: [id])
+}
+
+model Allocation {
+  id            String    @id @default(cuid())
+  offerId       String
+  ticketId      String
+  requirementId String
+  foodItemId    String
+  quantity      Int // reserved quantity (unit = requirement unit = item unit)
+  collectedQty  Int       @default(0)
+  acceptedQty   Int       @default(0)
+  rejectedQty   Int       @default(0)
+  status        String    @default("RESERVED") // RESERVED|COLLECTED|DELIVERED|PARTIAL|RELEASED|FAILED
+  holdExpiresAt DateTime
+  jobId         String?
+  createdAt     DateTime  @default(now())
+  ticket        NeedTicket @relation(fields: [ticketId], references: [id])
+  requirement   TicketRequirement @relation(fields: [requirementId], references: [id])
+  foodItem      FoodItem  @relation(fields: [foodItemId], references: [id])
+  job           DeliveryJob? @relation(fields: [jobId], references: [id])
+
+  @@index([status, holdExpiresAt])
+}
+
+// Ledger of every quantity change, for both donations and grocery stock.
+model InventoryMovement {
+  id           String   @id @default(cuid())
+  foodItemId   String?
+  batchId      String?
+  allocationId String?
+  orderId      String?
+  type         String // ALLOCATE|RELEASE|COLLECT|ACCEPT|REJECT|ADJUST|ORDER_RESERVE|ORDER_RELEASE|ORDER_COLLECT|WITHDRAW
+  quantity     Int
+  reason       String   @default("")
+  actorId      String?
+  createdAt    DateTime @default(now())
+
+  @@index([foodItemId])
+  @@index([batchId])
+}
+
+// ---------------- Logistics ----------------
+
+model Vehicle {
+  id           String  @id @default(cuid())
+  tenantId     String
+  label        String
+  capacityKg   Int
+  refrigerated Boolean @default(false)
+  active       Boolean @default(true)
+  tenant       Tenant  @relation(fields: [tenantId], references: [id])
+}
+
+model DeliveryJob {
+  id             String    @id @default(cuid())
+  status         String    @default("PLANNING") // PLANNING|AWAITING_FUNDING|ASSIGNED|ACCEPTED|AT_PICKUP|COLLECTED|IN_TRANSIT|DELIVERED|COMPLETED|PARTIALLY_COMPLETED|CANCELLED|FAILED
+  mode           String    @default("PLATFORM_DISPATCH") // ORG_VEHICLE|PLATFORM_DISPATCH|ON_DEMAND_MANUAL
+  collectorId    String?
+  vehicleId      String?
+  logisticsTenantId String?
+  quoteMinor     Int       @default(0)
+  handling       String    @default("AMBIENT") // AMBIENT|HOT|CHILLED
+  routeSuggestion String   @default("[]") // JSON ordered stop ids + explanation; suggested only
+  routeApproved  Boolean   @default(false)
+  handoverCodeHash String?
+  receiverConfirmedAt DateTime?
+  receiverConfirmedById String?
+  failureReason  String?
+  resolution     String?
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  stops          DeliveryStop[]
+  allocations    Allocation[]
+  funding        FundingCommitment[]
+  handovers      HandoverEvent[]
+
+  @@index([status])
+}
+
+model DeliveryStop {
+  id          String    @id @default(cuid())
+  jobId       String
+  kind        String // PICKUP | DROPOFF
+  tenantId    String
+  lotId       String?
+  ticketId    String?
+  seq         Int
+  address     String    @default("")
+  lat         Float?
+  lng         Float?
+  windowStart DateTime?
+  windowEnd   DateTime?
+  plannedQty  Int       @default(0)
+  actualQty   Int?
+  arrivedAt   DateTime?
+  doneAt      DateTime?
+  job         DeliveryJob @relation(fields: [jobId], references: [id])
+}
+
+model HandoverEvent {
+  id         String   @id @default(cuid())
+  jobId      String
+  stopId     String?
+  type       String // COLLECTOR_ACCEPTED|ARRIVED|PICKED_UP|DELIVERED|RECEIVED|FAILED|NOTE
+  actorId    String
+  tenantId   String?
+  notes      String   @default("")
+  evidenceId String?
+  createdAt  DateTime @default(now())
+  job        DeliveryJob @relation(fields: [jobId], references: [id])
+}
+
+model FundingCommitment {
+  id            String   @id @default(cuid())
+  jobId         String
+  payerType     String // ORG|RESTAURANT|SPONSOR|PLATFORM
+  payerTenantId String?
+  sponsorName   String?
+  amountMinor   Int
+  status        String   @default("COMMITTED") // COMMITTED (a record, not proof of payment) | CONFIRMED_PAID
+  createdById   String
+  createdAt     DateTime @default(now())
+  job           DeliveryJob @relation(fields: [jobId], references: [id])
+}
+
+// ---------------- Platform ----------------
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  tenantId  String?
+  type      String
+  title     String
+  body      String    @default("")
+  link      String?
+  dedupeKey String    @unique // prevents duplicates from retried jobs
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  createdById String
+  createdAt DateTime @default(now())
+}
+
+model JobTask {
+  id        String    @id @default(cuid())
+  type      String
+  key       String    @unique // idempotency key per logical run
+  status    String    @default("PENDING") // PENDING|RUNNING|DONE|FAILED
+  attempts  Int       @default(0)
+  runAt     DateTime  @default(now())
+  lockedAt  DateTime?
+  lastError String?
+  result    String?
+  createdAt DateTime  @default(now())
+
+  @@index([status, runAt])
+}
+
+model Complaint {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  reporterId  String
+  subject     String
+  body        String
+  relatedType String?
+  relatedId   String?
+  status      String   @default("OPEN") // OPEN|RESOLVED
+  resolution  String?
+  createdAt   DateTime @default(now())
+}
+
+model PolicySetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String // JSON
+  version     Int      @default(1)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  actorId    String?
+  tenantId   String? // tenant the actor acted on behalf of
+  action     String
+  entityType String
+  entityId   String
+  data       String   @default("{}")
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([tenantId, createdAt])
+}
